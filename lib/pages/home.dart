@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rss_reader/pages/feed.dart';
 import 'package:webfeed/webfeed.dart';
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -18,6 +19,12 @@ class _HomePageState extends State<HomePage>
   @override
   void initState() {
     super.initState();
+    readFeeds().then((List<Map> items) {
+      items.forEach((item) {
+        feeds.add(Feed.fromMap(item));
+      });
+      setState(() {});
+    });
   }
 
   @override
@@ -82,8 +89,12 @@ class _HomePageState extends State<HomePage>
                                 if (normalizedFeed == null) {
                                   return;
                                 }
-                                feeds.add(normalizedFeed);
-                                setState(() {});
+                                addFeed(normalizedFeed).then((feed) {
+                                  feeds.add(feed);
+                                  addFeedItems(feed).then((items) {
+                                    setState(() {});
+                                  });
+                                });
                               });
                             }
                             Navigator.of(context).pop();
@@ -107,7 +118,10 @@ class _HomePageState extends State<HomePage>
             ),
             ListTile(
               title: Text("Item 1"),
-              onTap: () {},
+              onTap: () async {
+                List<Map> map = await readFeeds();
+                print(map);
+              },
             ),
             ListTile(
               title: Text("Settings"),
@@ -137,6 +151,7 @@ class _HomePageState extends State<HomePage>
 }
 
 class Feed {
+  int id;
   String title;
   String link;
   String description;
@@ -144,9 +159,33 @@ class Feed {
   List<FeedItem> items = [];
 
   Feed({this.title, this.description, this.link, this.updatedAt});
+
+  Feed.fromMap(Map<String, dynamic> map) {
+    id = map["id"];
+    title = map["title"];
+    link = map["link"];
+    description = map["description"];
+    updatedAt = DateTime.parse(map["updatedAt"]);
+    items = [];
+  }
+
+  Map<String, dynamic> toMap() {
+    var map = <String, dynamic>{
+      "title": title,
+      "link": link,
+      "description": description,
+      "updatedAt": updatedAt.toString()
+    };
+    if (id != null) {
+      map["id"] = id;
+    }
+    return map;
+  }
 }
 
 class FeedItem {
+  int id;
+  int feedId;
   String title;
   String author;
   String description;
@@ -164,6 +203,37 @@ class FeedItem {
     this.summary,
     this.content,
   });
+
+  FeedItem.fromMap(Map<String, dynamic> map) {
+    id = map["id"];
+    feedId = map["feedId"];
+    title = map["title"];
+    author = map["author"];
+    description = map["description"];
+    link = map["link"];
+    summary = map["summary"];
+    content = map["content"];
+    publishedAt = DateTime.parse(map["publishedAt"]);
+  }
+
+  Map<String, dynamic> toMap(int _feedId) {
+    var map = <String, dynamic>{
+      "title": title,
+      "author": author,
+      "description": description,
+      "link": link,
+      "publishedAt": publishedAt.toString(),
+      "summary": summary,
+      "content": content
+    };
+
+    if (id != null) {
+      map["id"] = id;
+    }
+    map["feedId"] = feedId ?? _feedId;
+
+    return map;
+  }
 }
 
 Feed normalizeAtom(AtomFeed feed) {
@@ -214,4 +284,44 @@ Feed normalizeRss(RssFeed feed) {
     );
   });
   return normalizedFeed;
+}
+
+Future<Database> getDatabase() async {
+//  await deleteDatabase('feeds.db');
+  return openDatabase('feeds.db', version: 1,
+      onCreate: (Database db, int version) async {
+    await db.execute(
+        'CREATE TABLE Feed (id INTEGER PRIMARY KEY, title TEXT, link TEXT, description TEXT, updatedAt TEXT)');
+    await db.execute(
+        'CREATE TABLE FeedItem (id INTEGER PRIMARY KEY, feedId INTEGER, title TEXT, author TEXT, description TEXT, link TEXT, publishedAt TEXT, summary TEXT, content TEXT)');
+  });
+}
+
+Future<List<Map>> readFeeds() async {
+  Database database = await getDatabase();
+  List<Map> maps = await database.query('Feed');
+  await database.close();
+  return Future.value(maps);
+}
+
+Future<Feed> addFeed(Feed feed) async {
+  Database database = await getDatabase();
+  feed.id = await database.insert('Feed', feed.toMap());
+  await database.close();
+  return feed;
+}
+
+Future addFeedItems(Feed feed) async {
+  Database database = await getDatabase();
+  await database.transaction((txn) async {
+
+    var batch = txn.batch();
+    feed.items.forEach((item) {
+      batch.insert('FeedItem', item.toMap(feed.id));
+    });
+    await batch.commit();
+  });
+
+  await database.close();
+  return feed;
 }
